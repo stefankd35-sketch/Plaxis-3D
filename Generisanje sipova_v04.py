@@ -12,7 +12,7 @@ PLAXIS_HOST = "localhost"
 PLAXIS_PORT = 10000
 PLAXIS_PASSWORD = "12345"
 
-EXCEL_FILE = Path(r"C:\Users\jelen\OneDrive\Desktop\pyPlaxis3D\pile_grid.xlsx")
+EXCEL_FILE = Path(r"C:\Users\jelen\OneDrive\Desktop\Plaxis 3D - Podloge\pile_grid.xlsx")
 SHEET_NAME = "GridInput"
 
 MAX_ROWS = 30

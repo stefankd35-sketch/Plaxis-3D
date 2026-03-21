@@ -9,7 +9,7 @@ from plxscripting.easy import *
 # ============================================================
 # USER SETTINGS
 # ============================================================
-DXF_FILE = Path(r"C:\Users\jelen\OneDrive\Desktop\pyPlaxis3D\layout.dxf")
+DXF_FILE = Path(r"C:\Users\jelen\OneDrive\Desktop\Plaxis 3D - Podloge\layout.dxf")
 
 PILE_LAYER = "PILES"
 BOREHOLE_LAYER = "BOREHOLES"
