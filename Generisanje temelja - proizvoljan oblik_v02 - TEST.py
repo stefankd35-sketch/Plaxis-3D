@@ -68,6 +68,74 @@ def key2d(pt, ndigits=KEY_DIGITS):
     return (round(pt[0], ndigits), round(pt[1], ndigits))
 
 
+def normalize_layer_name(name):
+    return str(name).strip().upper()
+
+
+def layer_matches(entity_layer, target_layer):
+    return normalize_layer_name(entity_layer) == normalize_layer_name(target_layer)
+
+
+def print_available_layers(doc):
+    try:
+        print("Available DXF layers:")
+        for layer in doc.layers:
+            print(f"  - '{layer.dxf.name}'")
+    except Exception as e:
+        print(f"Could not list layers: {e}")
+
+
+def get_lwpolyline_points(e):
+    pts = []
+    for p in e.get_points():
+        x = p[0]
+        y = p[1]
+        pts.append(round_pt(x, y))
+    return pts
+
+
+def get_polyline_points(e):
+    pts = []
+    try:
+        for v in e.vertices:
+            pts.append(round_pt(v.dxf.location.x, v.dxf.location.y))
+    except Exception:
+        try:
+            for v in e.points():
+                pts.append(round_pt(v[0], v[1]))
+        except Exception:
+            pass
+    return pts
+
+
+def polyline_is_closed(e):
+    try:
+        return bool(e.closed)
+    except Exception:
+        try:
+            return bool(e.is_closed)
+        except Exception:
+            return False
+
+
+def points_to_segments_2d(pts):
+    segs = []
+    if len(pts) < 2:
+        return segs
+    for i in range(len(pts) - 1):
+        segs.append((pts[i], pts[i + 1]))
+    return segs
+
+
+def closed_points_to_segments_3d(pts3d):
+    segs = []
+    if len(pts3d) < 3:
+        return segs
+    for i in range(len(pts3d)):
+        segs.append((pts3d[i], pts3d[(i + 1) % len(pts3d)]))
+    return segs
+
+
 def segment_groups(segments):
     groups = []
 
@@ -348,6 +416,8 @@ def get_dxf_data(dxf_path):
     doc = ezdxf.readfile(dxf_path)
     msp = doc.modelspace()
 
+    print_available_layers(doc)
+
     pile_points = []
     borehole_points = []
     plate_segments = []
@@ -356,40 +426,84 @@ def get_dxf_data(dxf_path):
     point_load_points = []
     line_load_lines = []
     surface_load_segments = []
+    surface_load_polygons = []
 
     for e in msp:
         layer = e.dxf.layer
+        dtype = e.dxftype()
 
-        if layer in (PILE_LAYER, BOREHOLE_LAYER):
-            if e.dxftype() == "POINT":
+        # ----------------------------------------------------
+        # PILES / BOREHOLES
+        # ----------------------------------------------------
+        if layer_matches(layer, PILE_LAYER) or layer_matches(layer, BOREHOLE_LAYER):
+            if dtype == "POINT":
                 pt = round_pt(e.dxf.location.x, e.dxf.location.y)
-            elif e.dxftype() == "CIRCLE":
+            elif dtype == "CIRCLE":
                 pt = round_pt(e.dxf.center.x, e.dxf.center.y)
+            elif dtype == "INSERT":
+                pt = round_pt(e.dxf.insert.x, e.dxf.insert.y)
             else:
                 continue
 
-            if layer == PILE_LAYER:
+            if layer_matches(layer, PILE_LAYER):
                 pile_points.append(pt)
             else:
                 borehole_points.append(pt)
 
-        elif layer == POINT_LINE_LOAD_LAYER:
-            if e.dxftype() == "POINT":
+        # ----------------------------------------------------
+        # POINT/LINE LOADS
+        # ----------------------------------------------------
+        elif layer_matches(layer, POINT_LINE_LOAD_LAYER):
+            if dtype == "POINT":
                 point_load_points.append(round_pt(e.dxf.location.x, e.dxf.location.y))
-            elif e.dxftype() == "CIRCLE":
+            elif dtype == "CIRCLE":
                 point_load_points.append(round_pt(e.dxf.center.x, e.dxf.center.y))
-            elif e.dxftype() == "LINE":
+            elif dtype == "INSERT":
+                point_load_points.append(round_pt(e.dxf.insert.x, e.dxf.insert.y))
+            elif dtype == "LINE":
                 p1 = round_pt(e.dxf.start.x, e.dxf.start.y)
                 p2 = round_pt(e.dxf.end.x, e.dxf.end.y)
                 line_load_lines.append((p1, p2))
+            elif dtype == "LWPOLYLINE":
+                pts = get_lwpolyline_points(e)
+                segs = points_to_segments_2d(pts)
+                line_load_lines.extend(segs)
+            elif dtype == "POLYLINE":
+                pts = get_polyline_points(e)
+                segs = points_to_segments_2d(pts)
+                line_load_lines.extend(segs)
 
-        elif layer == SURFACE_LOAD_LAYER:
-            if e.dxftype() == "LINE":
-                p1 = round_pt(e.dxf.start.x, e.dxf.start.y, e.dxf.start.z)
-                p2 = round_pt(e.dxf.end.x, e.dxf.end.y, e.dxf.end.z)
+        # ----------------------------------------------------
+        # SURFACE LOADS
+        # ----------------------------------------------------
+        elif layer_matches(layer, SURFACE_LOAD_LAYER):
+            if dtype == "LINE":
+                p1 = round_pt(e.dxf.start.x, e.dxf.start.y, 0.0)
+                p2 = round_pt(e.dxf.end.x, e.dxf.end.y, 0.0)
                 surface_load_segments.append((p1, p2))
 
-        elif layer == SLAB_BOUNDARY_LAYER and e.dxftype() == "LINE":
+            elif dtype == "LWPOLYLINE":
+                pts2d = get_lwpolyline_points(e)
+                if polyline_is_closed(e) and len(pts2d) >= 3:
+                    surface_load_polygons.append([(p[0], p[1], 0.0) for p in pts2d])
+                else:
+                    segs = closed_points_to_segments_3d([(p[0], p[1], 0.0) for p in pts2d]) if polyline_is_closed(e) else points_to_segments_2d(pts2d)
+                    for a, b in segs:
+                        surface_load_segments.append(((a[0], a[1], 0.0), (b[0], b[1], 0.0)))
+
+            elif dtype == "POLYLINE":
+                pts2d = get_polyline_points(e)
+                if polyline_is_closed(e) and len(pts2d) >= 3:
+                    surface_load_polygons.append([(p[0], p[1], 0.0) for p in pts2d])
+                else:
+                    segs = closed_points_to_segments_3d([(p[0], p[1], 0.0) for p in pts2d]) if polyline_is_closed(e) else points_to_segments_2d(pts2d)
+                    for a, b in segs:
+                        surface_load_segments.append(((a[0], a[1], 0.0), (b[0], b[1], 0.0)))
+
+        # ----------------------------------------------------
+        # SLAB BOUNDARY ONLY
+        # ----------------------------------------------------
+        elif layer_matches(layer, SLAB_BOUNDARY_LAYER) and dtype == "LINE":
             p1 = round_pt(e.dxf.start.x, e.dxf.start.y, e.dxf.start.z)
             p2 = round_pt(e.dxf.end.x, e.dxf.end.y, e.dxf.end.z)
 
@@ -402,6 +516,7 @@ def get_dxf_data(dxf_path):
     plate_loops = split_closed_loops(plate_segments, label="plate")
     surface_loops = split_closed_loops(surface_segments, label="surface")
     surface_load_loops = split_closed_loops(surface_load_segments, label="surface load")
+    surface_load_loops.extend(surface_load_polygons)
 
     if not plate_loops:
         plate_pts = []
