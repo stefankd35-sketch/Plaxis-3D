@@ -19,8 +19,7 @@ SURFACE_LOAD_LAYER = "SURFACE LOADS"
 PILE_MAT_NAME = "Pile_Material_01"
 PLATE_MAT_NAME = "Raft_Concrete"
 
-# Optional load values (edit later if needed)
-# Geometry will be created even if you leave these as 0.0
+# Optional default load values
 DEFAULT_POINT_LOAD_Z = 0.0
 DEFAULT_LINE_LOAD_Z = 0.0
 DEFAULT_SURFACE_LOAD_Z = 0.0
@@ -33,6 +32,7 @@ PLAXIS_PASSWORD = "12345"
 # Tolerances
 Z_TOL = 1e-6
 XY_ROUND = 3
+KEY_DIGITS = 3  # endpoint snap precision for grouping closed loops
 
 # ============================================================
 # HELPERS
@@ -66,16 +66,60 @@ def rotate_list(lst, shift):
     return lst[shift:] + lst[:shift]
 
 
-def build_ordered_polygon_from_segments(segments):
+def key2d(pt, ndigits=KEY_DIGITS):
+    return (round(pt[0], ndigits), round(pt[1], ndigits))
+
+
+def segment_groups(segments):
+    """
+    Group segments by XY connectivity.
+    Returns a list of connected segment groups.
+    """
+    groups = []
+
+    for seg in segments:
+        p1, p2 = seg
+        k1 = key2d(p1)
+        k2 = key2d(p2)
+
+        matched = []
+        for i, grp in enumerate(groups):
+            if k1 in grp["keys"] or k2 in grp["keys"]:
+                matched.append(i)
+
+        if not matched:
+            groups.append({
+                "segments": [seg],
+                "keys": {k1, k2}
+            })
+        else:
+            first = matched[0]
+            groups[first]["segments"].append(seg)
+            groups[first]["keys"].update([k1, k2])
+
+            for j in reversed(matched[1:]):
+                groups[first]["segments"].extend(groups[j]["segments"])
+                groups[first]["keys"].update(groups[j]["keys"])
+                groups.pop(j)
+
+    return [g["segments"] for g in groups]
+
+
+def build_ordered_polygon_from_segments_tolerant(segments):
+    """
+    Build ordered polygon from one connected group of segments.
+    Returns:
+        polygon_points, is_closed, bad_nodes
+    """
     if not segments:
-        return []
+        return [], False, []
 
     adjacency = defaultdict(list)
     point_map = {}
 
     for p1, p2 in segments:
-        k1 = (p1[0], p1[1])
-        k2 = (p2[0], p2[1])
+        k1 = key2d(p1)
+        k2 = key2d(p2)
 
         adjacency[k1].append(k2)
         adjacency[k2].append(k1)
@@ -84,11 +128,10 @@ def build_ordered_polygon_from_segments(segments):
         point_map[k2] = p2
 
     bad_nodes = [k for k, v in adjacency.items() if len(v) != 2]
-    if bad_nodes:
-        raise RuntimeError(
-            "DXF boundary is not a single clean closed polygon. "
-            f"Found vertices with degree != 2: {bad_nodes[:10]}"
-        )
+    is_closed = len(bad_nodes) == 0
+
+    if not is_closed:
+        return [], False, bad_nodes
 
     start = next(iter(adjacency.keys()))
     ordered_keys = [start]
@@ -103,7 +146,7 @@ def build_ordered_polygon_from_segments(segments):
         else:
             candidates = [n for n in neighbors if n != prev_key]
             if not candidates:
-                break
+                return [], False, ["Traversal failed"]
             next_key = candidates[0]
 
         if next_key == start:
@@ -114,53 +157,38 @@ def build_ordered_polygon_from_segments(segments):
         current_key = next_key
 
         if len(ordered_keys) > len(point_map) + 5:
-            raise RuntimeError("Failed to reconstruct closed polygon from DXF lines.")
+            return [], False, ["Traversal failed"]
 
-    return [point_map[k] for k in ordered_keys]
+    return [point_map[k] for k in ordered_keys], True, []
 
 
-def split_closed_loops(segments):
+def split_closed_loops(segments, label="boundary"):
     """
-    Split a list of 2D/3D line segments into separate closed loops.
-    Each loop is returned as an ordered polygon.
+    Split segments into connected groups.
+    Closed groups become polygons.
+    Open groups are skipped with warning.
     """
     if not segments:
         return []
 
-    unused = segments[:]
     loops = []
+    groups = segment_groups(segments)
 
-    while unused:
-        seed = unused.pop(0)
-        loop_segments = [seed]
+    for i, grp in enumerate(groups, start=1):
+        polygon, is_closed, bad_nodes = build_ordered_polygon_from_segments_tolerant(grp)
 
-        changed = True
-        while changed:
-            changed = False
-            loop_keys = set()
-            for a, b in loop_segments:
-                loop_keys.add((a[0], a[1]))
-                loop_keys.add((b[0], b[1]))
-
-            remaining = []
-            for seg in unused:
-                a, b = seg
-                ka = (a[0], a[1])
-                kb = (b[0], b[1])
-                if ka in loop_keys or kb in loop_keys:
-                    loop_segments.append(seg)
-                    changed = True
-                else:
-                    remaining.append(seg)
-
-            unused = remaining
-
-        loops.append(build_ordered_polygon_from_segments(loop_segments))
+        if is_closed:
+            loops.append(polygon)
+        else:
+            print(f"Warning: Skipping open {label} group {i}. Bad vertices: {bad_nodes[:10]}")
 
     return loops
 
 
 def align_surface_to_plate(plate_pts, surface_pts):
+    """
+    Reorder surface_pts so they correspond to plate_pts.
+    """
     if len(plate_pts) != len(surface_pts):
         raise RuntimeError(
             f"Plate boundary has {len(plate_pts)} vertices, "
@@ -223,6 +251,10 @@ def get_pile_length():
 
 
 def create_sloped_side_surfaces(g_i, plate_pts, surface_pts):
+    """
+    Create sloped side surfaces between plate polygon and top surface polygon.
+    Automatically aligns top boundary to the plate boundary.
+    """
     if len(plate_pts) < 3 or len(surface_pts) < 3:
         raise RuntimeError("Need at least 3 points in both plate and surface boundaries.")
 
@@ -257,7 +289,6 @@ def create_sloped_side_surfaces(g_i, plate_pts, surface_pts):
 def safe_set_load_z(obj, value):
     """
     Try several common PLAXIS property names for vertical load value.
-    This is intentionally defensive because property names can differ by version/object type.
     """
     if value is None:
         return False
@@ -266,7 +297,7 @@ def safe_set_load_z(obj, value):
         "Fz", "qz", "pz",
         "sigmaz",
         "z", "z_start", "z_end",
-        "qy", "qx"  # fallback only if user later adapts manually
+        "qy", "qx"
     ]
 
     for prop in candidate_props:
@@ -319,11 +350,10 @@ def create_line_load(g_i, p1, p2, load_value_z=None):
 
 def create_surface_load(g_i, pts3d, load_value_z=None):
     """
-    Create a surface object from polygon points, then assign a surface load to it.
+    Create a support surface from polygon points, then assign a surface load to it.
     """
     errors = []
 
-    surf = None
     try:
         surf = g_i.surface(*pts3d)
     except Exception as e:
@@ -340,9 +370,7 @@ def create_surface_load(g_i, pts3d, load_value_z=None):
         except Exception as e:
             errors.append(f"surfaceload{args}: {e}")
 
-    raise RuntimeError(
-        "Could not create surface load.\n" + "\n".join(errors)
-    )
+    raise RuntimeError("Could not create surface load.\n" + "\n".join(errors))
 
 
 def get_dxf_data(dxf_path):
@@ -412,10 +440,24 @@ def get_dxf_data(dxf_path):
             elif kind == "surface":
                 surface_segments.append((p1, p2))
 
-    plate_pts = build_ordered_polygon_from_segments(plate_segments)
-    surface_pts = build_ordered_polygon_from_segments(surface_segments)
+    # tolerate multiple groups and skip open ones
+    plate_loops = split_closed_loops(plate_segments, label="plate")
+    surface_loops = split_closed_loops(surface_segments, label="surface")
+    surface_load_loops = split_closed_loops(surface_load_segments, label="surface load")
 
-    surface_load_loops = split_closed_loops(surface_load_segments)
+    if not plate_loops:
+        plate_pts = []
+    else:
+        if len(plate_loops) > 1:
+            print(f"Warning: Found {len(plate_loops)} plate loops. Using the first one.")
+        plate_pts = plate_loops[0]
+
+    if not surface_loops:
+        surface_pts = []
+    else:
+        if len(surface_loops) > 1:
+            print(f"Warning: Found {len(surface_loops)} top surface loops. Using the first one.")
+        surface_pts = surface_loops[0]
 
     return {
         "piles": pile_points,
@@ -597,7 +639,7 @@ try:
             except Exception as e:
                 print(f"  Failed to create surface load {i}: {e}")
     else:
-        print("No surface loads found on layer SURFACE LOADS.")
+        print("No closed surface loads found on layer SURFACE LOADS.")
 
 except Exception as e:
     print(f"Error during execution: {e}")
