@@ -13,26 +13,24 @@ DXF_FILE = Path(r"C:\Users\jelen\OneDrive\Desktop\Plaxis 3D - Podloge\layout.dxf
 
 PILE_LAYER = "PILES"
 BOREHOLE_LAYER = "BOREHOLES"
-POINT_LINE_LOAD_LAYER = "POINT-LINE LOADS"
+SLAB_BOUNDARY_LAYER = "SLAB BOUNDARY"
+POINT_LINE_LOAD_LAYER = "POINT/LINE LOADS"
 SURFACE_LOAD_LAYER = "SURFACE LOADS"
 
 PILE_MAT_NAME = "Pile_Material_01"
 PLATE_MAT_NAME = "Raft_Concrete"
 
-# Optional default load values
 DEFAULT_POINT_LOAD_Z = 0.0
 DEFAULT_LINE_LOAD_Z = 0.0
 DEFAULT_SURFACE_LOAD_Z = 0.0
 
-# PLAXIS connection
 PLAXIS_HOST = "localhost"
 PLAXIS_PORT = 10000
 PLAXIS_PASSWORD = "12345"
 
-# Tolerances
 Z_TOL = 1e-6
 XY_ROUND = 3
-KEY_DIGITS = 3  # endpoint snap precision for grouping closed loops
+KEY_DIGITS = 3
 
 # ============================================================
 # HELPERS
@@ -71,10 +69,6 @@ def key2d(pt, ndigits=KEY_DIGITS):
 
 
 def segment_groups(segments):
-    """
-    Group segments by XY connectivity.
-    Returns a list of connected segment groups.
-    """
     groups = []
 
     for seg in segments:
@@ -106,11 +100,6 @@ def segment_groups(segments):
 
 
 def build_ordered_polygon_from_segments_tolerant(segments):
-    """
-    Build ordered polygon from one connected group of segments.
-    Returns:
-        polygon_points, is_closed, bad_nodes
-    """
     if not segments:
         return [], False, []
 
@@ -163,11 +152,6 @@ def build_ordered_polygon_from_segments_tolerant(segments):
 
 
 def split_closed_loops(segments, label="boundary"):
-    """
-    Split segments into connected groups.
-    Closed groups become polygons.
-    Open groups are skipped with warning.
-    """
     if not segments:
         return []
 
@@ -186,9 +170,6 @@ def split_closed_loops(segments, label="boundary"):
 
 
 def align_surface_to_plate(plate_pts, surface_pts):
-    """
-    Reorder surface_pts so they correspond to plate_pts.
-    """
     if len(plate_pts) != len(surface_pts):
         raise RuntimeError(
             f"Plate boundary has {len(plate_pts)} vertices, "
@@ -251,10 +232,6 @@ def get_pile_length():
 
 
 def create_sloped_side_surfaces(g_i, plate_pts, surface_pts):
-    """
-    Create sloped side surfaces between plate polygon and top surface polygon.
-    Automatically aligns top boundary to the plate boundary.
-    """
     if len(plate_pts) < 3 or len(surface_pts) < 3:
         raise RuntimeError("Need at least 3 points in both plate and surface boundaries.")
 
@@ -287,9 +264,6 @@ def create_sloped_side_surfaces(g_i, plate_pts, surface_pts):
 
 
 def safe_set_load_z(obj, value):
-    """
-    Try several common PLAXIS property names for vertical load value.
-    """
     if value is None:
         return False
 
@@ -349,9 +323,6 @@ def create_line_load(g_i, p1, p2, load_value_z=None):
 
 
 def create_surface_load(g_i, pts3d, load_value_z=None):
-    """
-    Create a support surface from polygon points, then assign a surface load to it.
-    """
     errors = []
 
     try:
@@ -389,9 +360,6 @@ def get_dxf_data(dxf_path):
     for e in msp:
         layer = e.dxf.layer
 
-        # ----------------------------------------------------
-        # PILES / BOREHOLES
-        # ----------------------------------------------------
         if layer in (PILE_LAYER, BOREHOLE_LAYER):
             if e.dxftype() == "POINT":
                 pt = round_pt(e.dxf.location.x, e.dxf.location.y)
@@ -405,9 +373,6 @@ def get_dxf_data(dxf_path):
             else:
                 borehole_points.append(pt)
 
-        # ----------------------------------------------------
-        # POINT/LINE LOADS
-        # ----------------------------------------------------
         elif layer == POINT_LINE_LOAD_LAYER:
             if e.dxftype() == "POINT":
                 point_load_points.append(round_pt(e.dxf.location.x, e.dxf.location.y))
@@ -418,19 +383,13 @@ def get_dxf_data(dxf_path):
                 p2 = round_pt(e.dxf.end.x, e.dxf.end.y)
                 line_load_lines.append((p1, p2))
 
-        # ----------------------------------------------------
-        # SURFACE LOADS
-        # ----------------------------------------------------
         elif layer == SURFACE_LOAD_LAYER:
             if e.dxftype() == "LINE":
                 p1 = round_pt(e.dxf.start.x, e.dxf.start.y, e.dxf.start.z)
                 p2 = round_pt(e.dxf.end.x, e.dxf.end.y, e.dxf.end.z)
                 surface_load_segments.append((p1, p2))
 
-        # ----------------------------------------------------
-        # GEOMETRY CLASSIFICATION BY Z
-        # ----------------------------------------------------
-        elif e.dxftype() == "LINE":
+        elif layer == SLAB_BOUNDARY_LAYER and e.dxftype() == "LINE":
             p1 = round_pt(e.dxf.start.x, e.dxf.start.y, e.dxf.start.z)
             p2 = round_pt(e.dxf.end.x, e.dxf.end.y, e.dxf.end.z)
 
@@ -440,7 +399,6 @@ def get_dxf_data(dxf_path):
             elif kind == "surface":
                 surface_segments.append((p1, p2))
 
-    # tolerate multiple groups and skip open ones
     plate_loops = split_closed_loops(plate_segments, label="plate")
     surface_loops = split_closed_loops(surface_segments, label="surface")
     surface_load_loops = split_closed_loops(surface_load_segments, label="surface load")
@@ -449,14 +407,14 @@ def get_dxf_data(dxf_path):
         plate_pts = []
     else:
         if len(plate_loops) > 1:
-            print(f"Warning: Found {len(plate_loops)} plate loops. Using the first one.")
+            print(f"Warning: Found {len(plate_loops)} plate loops on layer {SLAB_BOUNDARY_LAYER}. Using the first one.")
         plate_pts = plate_loops[0]
 
     if not surface_loops:
         surface_pts = []
     else:
         if len(surface_loops) > 1:
-            print(f"Warning: Found {len(surface_loops)} top surface loops. Using the first one.")
+            print(f"Warning: Found {len(surface_loops)} top surface loops on layer {SLAB_BOUNDARY_LAYER}. Using the first one.")
         surface_pts = surface_loops[0]
 
     return {
@@ -498,9 +456,6 @@ try:
 
     plate_z = None
 
-    # --------------------------------------------------------
-    # PART 1: Plate from lines with z < 0
-    # --------------------------------------------------------
     if len(plate_pts) >= 3:
         plate_z = plate_pts[0][2]
 
@@ -519,30 +474,19 @@ try:
         else:
             print(f'Warning: Plate material "{PLATE_MAT_NAME}" not found.')
     else:
-        print("Warning: Not enough z<0 line data to create plate surface.")
+        print("Warning: Not enough z<0 line data on layer SLAB BOUNDARY to create plate surface.")
 
-    # --------------------------------------------------------
-    # PART 2: Ground/surface from lines with z = 0
-    # --------------------------------------------------------
     if len(surface_pts) >= 3:
         print(f"Creating ground surface with {len(surface_pts)} vertices...")
         g_i.surface(*surface_pts)
     else:
-        print("Warning: Not enough z=0 line data to create top surface.")
+        print("Warning: Not enough z=0 line data on layer SLAB BOUNDARY to create top surface.")
 
-    # --------------------------------------------------------
-    # PART 2B: Sloped side surfaces between plate and top
-    # --------------------------------------------------------
     if len(plate_pts) >= 3 and len(surface_pts) >= 3:
         print("Creating sloped side surfaces...")
         side_surfaces = create_sloped_side_surfaces(g_i, plate_pts, surface_pts)
         print(f"Created {len(side_surfaces)} sloped side surfaces.")
 
-    # --------------------------------------------------------
-    # PART 3: Piles from layer PILES
-    # Top = plate level
-    # Bottom = plate level - pile length
-    # --------------------------------------------------------
     if piles:
         if plate_z is None:
             raise RuntimeError("Cannot create piles because plate elevation could not be determined.")
@@ -573,9 +517,6 @@ try:
     else:
         print("No pile points found on layer PILES.")
 
-    # --------------------------------------------------------
-    # PART 4: Boreholes from layer BOREHOLES
-    # --------------------------------------------------------
     if boreholes:
         print(f"Creating {len(boreholes)} boreholes...")
         for i, (bx, by) in enumerate(boreholes, start=1):
@@ -587,9 +528,6 @@ try:
     else:
         print("No borehole points found on layer BOREHOLES.")
 
-    # --------------------------------------------------------
-    # PART 5: Point loads from layer POINT/LINE LOADS
-    # --------------------------------------------------------
     if point_load_points:
         if plate_z is None:
             raise RuntimeError("Cannot create point loads because plate elevation could not be determined.")
@@ -604,9 +542,6 @@ try:
     else:
         print("No point loads found on layer POINT/LINE LOADS.")
 
-    # --------------------------------------------------------
-    # PART 6: Line loads from layer POINT/LINE LOADS
-    # --------------------------------------------------------
     if line_load_lines:
         if plate_z is None:
             raise RuntimeError("Cannot create line loads because plate elevation could not be determined.")
@@ -623,9 +558,6 @@ try:
     else:
         print("No line loads found on layer POINT/LINE LOADS.")
 
-    # --------------------------------------------------------
-    # PART 7: Surface loads from layer SURFACE LOADS
-    # --------------------------------------------------------
     if surface_load_loops:
         if plate_z is None:
             raise RuntimeError("Cannot create surface loads because plate elevation could not be determined.")
