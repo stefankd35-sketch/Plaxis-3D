@@ -49,6 +49,15 @@ def classify_line(p1, p2):
     return None
 
 
+def xy_dist2(p1, p2):
+    return (p1[0] - p2[0])**2 + (p1[1] - p2[1])**2
+
+
+def rotate_list(lst, shift):
+    shift = shift % len(lst)
+    return lst[shift:] + lst[:shift]
+
+
 def build_ordered_polygon_from_segments(segments):
     if not segments:
         return []
@@ -66,6 +75,14 @@ def build_ordered_polygon_from_segments(segments):
         point_map[k1] = p1
         point_map[k2] = p2
 
+    # check closed-loop logic
+    bad_nodes = [k for k, v in adjacency.items() if len(v) != 2]
+    if bad_nodes:
+        raise RuntimeError(
+            "DXF boundary is not a single clean closed polygon. "
+            f"Found vertices with degree != 2: {bad_nodes[:10]}"
+        )
+
     start = next(iter(adjacency.keys()))
     ordered_keys = [start]
     prev_key = None
@@ -73,8 +90,6 @@ def build_ordered_polygon_from_segments(segments):
 
     while True:
         neighbors = adjacency[current_key]
-        if not neighbors:
-            break
 
         if prev_key is None:
             next_key = neighbors[0]
@@ -95,6 +110,39 @@ def build_ordered_polygon_from_segments(segments):
             raise RuntimeError("Failed to reconstruct closed polygon from DXF lines.")
 
     return [point_map[k] for k in ordered_keys]
+
+
+def align_surface_to_plate(plate_pts, surface_pts):
+    """
+    Reorder surface_pts so they correspond to plate_pts:
+    - same start corner
+    - same traversal direction
+    Uses XY proximity minimization.
+    """
+    if len(plate_pts) != len(surface_pts):
+        raise RuntimeError(
+            f"Plate boundary has {len(plate_pts)} vertices, "
+            f"but top surface boundary has {len(surface_pts)} vertices."
+        )
+
+    best_pts = None
+    best_score = None
+    n = len(plate_pts)
+
+    candidates = [
+        surface_pts[:],
+        list(reversed(surface_pts))
+    ]
+
+    for candidate in candidates:
+        for shift in range(n):
+            rotated = rotate_list(candidate, shift)
+            score = sum(xy_dist2(plate_pts[i], rotated[i]) for i in range(n))
+            if best_score is None or score < best_score:
+                best_score = score
+                best_pts = rotated
+
+    return best_pts
 
 
 def get_dxf_data(dxf_path):
@@ -176,6 +224,7 @@ def get_pile_length():
 def create_sloped_side_surfaces(g_i, plate_pts, surface_pts):
     """
     Create sloped side surfaces between plate polygon and top surface polygon.
+    Automatically aligns top boundary to the plate boundary.
     """
     if len(plate_pts) < 3 or len(surface_pts) < 3:
         raise RuntimeError("Need at least 3 points in both plate and surface boundaries.")
@@ -184,17 +233,23 @@ def create_sloped_side_surfaces(g_i, plate_pts, surface_pts):
         raise RuntimeError(
             f"Plate boundary has {len(plate_pts)} vertices, "
             f"but top surface boundary has {len(surface_pts)} vertices. "
-            "They must match to create sloped side surfaces."
+            "They must have the same number of vertices."
         )
 
-    side_surfaces = []
+    aligned_surface_pts = align_surface_to_plate(plate_pts, surface_pts)
 
+    print("Plate to top point matching:")
+    for i, (bp, tp) in enumerate(zip(plate_pts, aligned_surface_pts), start=1):
+        print(f"  {i}: plate {bp} -> top {tp}")
+
+    side_surfaces = []
     n = len(plate_pts)
+
     for i in range(n):
         b1 = plate_pts[i]
         b2 = plate_pts[(i + 1) % n]
-        t2 = surface_pts[(i + 1) % n]
-        t1 = surface_pts[i]
+        t2 = aligned_surface_pts[(i + 1) % n]
+        t1 = aligned_surface_pts[i]
 
         side = g_i.surface(b1, b2, t2, t1)
         side_surfaces.append(side)
