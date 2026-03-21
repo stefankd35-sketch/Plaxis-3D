@@ -336,6 +336,7 @@ def safe_set_load_z(obj, value):
         return False
 
     candidate_props = [
+        "sigz",
         "Fz", "qz", "pz",
         "sigmaz",
         "z", "z_start", "z_end",
@@ -398,18 +399,26 @@ def create_surface_load(g_i, pts3d, load_value_z=None):
     except Exception as e:
         raise RuntimeError(f"Could not create support surface for surface load: {e}")
 
-    for args in [
-        (surf,),
-        tuple(pts3d),
-    ]:
-        try:
-            obj = g_i.surfaceload(*args)
-            safe_set_load_z(obj, load_value_z)
-            return obj
-        except Exception as e:
-            errors.append(f"surfaceload{args}: {e}")
+    try:
+        obj = g_i.surfload(surf)
+    except Exception as e:
+        errors.append(f"surfload(surface): {e}")
+        raise RuntimeError("Could not create surface load.\n" + "\n".join(errors))
 
-    raise RuntimeError("Could not create surface load.\n" + "\n".join(errors))
+    if load_value_z is not None:
+        set_ok = safe_set_load_z(obj, load_value_z)
+
+        if not set_ok:
+            try:
+                surf.SurfaceLoad.sigz.set(load_value_z)
+                set_ok = True
+            except Exception:
+                pass
+
+        if not set_ok:
+            print(f"Warning: Surface load created, but could not set vertical value automatically to {load_value_z}.")
+
+    return obj
 
 
 def get_dxf_data(dxf_path):
