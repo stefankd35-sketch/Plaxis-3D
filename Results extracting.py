@@ -4,8 +4,7 @@ sys.path.append(r"C:\ProgramData\Seequent\PLAXIS Python Distribution V3\python\L
 
 from plxscripting.easy import *
 from openpyxl import Workbook
-from openpyxl.chart import ScatterChart, Series, Reference
-from openpyxl.chart.label import DataLabelList
+import matplotlib.pyplot as plt
 
 # =========================
 # SETTINGS
@@ -13,7 +12,9 @@ from openpyxl.chart.label import DataLabelList
 HOST = "localhost"
 PORT = 10001
 PASSWORD = "12345"
-OUT_FILE = r"embedded_beams_top_only.xlsx"
+
+EXCEL_FILE = r"embedded_beams_top_results.xlsx"
+PLOT_FILE_PNG = r"embedded_beams_scheme.png"
 
 # =========================
 # CONNECT TO OUTPUT
@@ -61,60 +62,33 @@ def get_res(obj, phase, rtype):
         return []
 
 def short_label(name, fallback_index):
-    """
-    'Embedded beam_1' -> '1'
-    'embedded beam 12' -> '12'
-    fallback -> beam number
-    """
-    m = re.search(r'(\d+)\s*$', str(name))
+    s = str(name)
+    m = re.search(r'_(\d+)$', s)
     if m:
         return m.group(1)
-    m = re.search(r'_(\d+)', str(name))
+    m = re.search(r'(\d+)$', s)
     if m:
         return m.group(1)
     return str(fallback_index)
 
 def top_point_index(z_values):
-    """
-    Returns index of top point = maximum Z.
-    """
     if not z_values:
         return None
     return max(range(len(z_values)), key=lambda i: z_values[i])
 
 # =========================
-# EXTRACTION
+# READ DATA
 # =========================
 phase = get_last_phase(g_o)
 rt = get_embedded_family(g_o)
 beams = get_beams(g_o)
 
-wb = Workbook()
-
-# -------------------------
-# Sheet 1: top point forces
-# -------------------------
-ws_top = wb.active
-ws_top.title = "Top_Results"
-ws_top.append(["BeamLabel", "OriginalName", "Top_X", "Top_Y", "Top_Z", "N_top", "Uz_top"])
-
-# -------------------------
-# Sheet 2: full geometry for plot
-# -------------------------
-ws_geo = wb.create_sheet("Geometry")
-ws_geo.append(["BeamLabel", "OriginalName", "PointNo", "X", "Y", "Z"])
-
-# -------------------------
-# Sheet 3: top points for labels
-# -------------------------
-ws_lbl = wb.create_sheet("Top_Points")
-ws_lbl.append(["BeamLabel", "X_top", "Y_top"])
-
-exported = 0
+beam_plot_data = []
+top_results = []
 
 for i, beam in enumerate(beams, start=1):
-    original_name = safe_name(beam, f"Beam_{i}")
-    beam_label = short_label(original_name, i)
+    original_name = safe_name(beam, f"Embedded beam_{i}")
+    beam_id = short_label(original_name, i)
 
     X = get_res(beam, phase, rt.X)
     Y = get_res(beam, phase, rt.Y)
@@ -126,19 +100,32 @@ for i, beam in enumerate(beams, start=1):
     if n_geom == 0:
         continue
 
-    # write full geometry for chart
-    for j in range(n_geom):
-        ws_geo.append([beam_label, original_name, j + 1, X[j], Y[j], Z[j]])
+    X = X[:n_geom]
+    Y = Y[:n_geom]
+    Z = Z[:n_geom]
 
-    idx_top = top_point_index(Z[:n_geom])
+    idx_top = top_point_index(Z)
     if idx_top is None:
         continue
 
     n_top = N[idx_top] if idx_top < len(N) else None
     uz_top = Uz[idx_top] if idx_top < len(Uz) else None
 
-    ws_top.append([
-        beam_label,
+    beam_plot_data.append({
+        "beam_id": beam_id,
+        "original_name": original_name,
+        "X": X,
+        "Y": Y,
+        "Z": Z,
+        "top_x": X[idx_top],
+        "top_y": Y[idx_top],
+        "top_z": Z[idx_top],
+        "N_top": n_top,
+        "Uz_top": uz_top,
+    })
+
+    top_results.append([
+        beam_id,
         original_name,
         X[idx_top],
         Y[idx_top],
@@ -147,87 +134,75 @@ for i, beam in enumerate(beams, start=1):
         uz_top
     ])
 
-    ws_lbl.append([
-        beam_label,
-        X[idx_top],
-        Y[idx_top]
-    ])
-
-    exported += 1
-
 # =========================
-# FORMATTING
+# EXPORT TO EXCEL
 # =========================
-for ws in [ws_top, ws_geo, ws_lbl]:
-    ws.freeze_panes = "A2"
+wb = Workbook()
+
+ws1 = wb.active
+ws1.title = "Top_Results"
+ws1.append(["BeamID", "OriginalName", "Top_X", "Top_Y", "Top_Z", "N_top", "Uz_top"])
+
+for row in top_results:
+    ws1.append(row)
 
 for col in ["A", "B", "C", "D", "E", "F", "G"]:
-    ws_top.column_dimensions[col].width = 18
+    ws1.column_dimensions[col].width = 18
+
+ws1.freeze_panes = "A2"
+
+ws2 = wb.create_sheet("Geometry")
+ws2.append(["BeamID", "OriginalName", "PointNo", "X", "Y", "Z"])
+
+for beam in beam_plot_data:
+    for j, (x, y, z) in enumerate(zip(beam["X"], beam["Y"], beam["Z"]), start=1):
+        ws2.append([beam["beam_id"], beam["original_name"], j, x, y, z])
 
 for col in ["A", "B", "C", "D", "E", "F"]:
-    ws_geo.column_dimensions[col].width = 18
+    ws2.column_dimensions[col].width = 18
 
-for col in ["A", "B", "C"]:
-    ws_lbl.column_dimensions[col].width = 14
+ws2.freeze_panes = "A2"
 
-# =========================
-# CHART
-# =========================
-chart = ScatterChart()
-chart.title = f"Embedded beams scheme - top labels ({safe_name(phase, 'Last phase')})"
-chart.x_axis.title = "X"
-chart.y_axis.title = "Y"
-chart.scatterStyle = "lineMarker"
-chart.height = 16
-chart.width = 28
-chart.legend.position = "r"
-
-# 1) Full beam geometry series
-max_row_geo = ws_geo.max_row
-r = 2
-
-while r <= max_row_geo:
-    beam_label = ws_geo.cell(r, 1).value
-    r_start = r
-
-    while r <= max_row_geo and ws_geo.cell(r, 1).value == beam_label:
-        r += 1
-
-    r_end = r - 1
-
-    x_ref = Reference(ws_geo, min_col=4, min_row=r_start, max_row=r_end)  # X
-    y_ref = Reference(ws_geo, min_col=5, min_row=r_start, max_row=r_end)  # Y
-
-    s = Series(y_ref, x_ref, title=str(beam_label))
-    chart.series.append(s)
-
-# 2) Top-point helper series with labels
-if ws_lbl.max_row > 1:
-    x_top_ref = Reference(ws_lbl, min_col=2, min_row=2, max_row=ws_lbl.max_row)
-    y_top_ref = Reference(ws_lbl, min_col=3, min_row=2, max_row=ws_lbl.max_row)
-
-    s_top = Series(y_top_ref, x_top_ref, title="Top points")
-    chart.series.append(s_top)
-
-    # show label from cells (BeamLabel column)
-    s_top.dLbls = DataLabelList()
-    s_top.dLbls.showSerName = False
-    s_top.dLbls.showCatName = False
-    s_top.dLbls.showVal = False
-    s_top.dLbls.showLegendKey = False
-
-    # openpyxl supports labels from cells via extLst poorly in some versions,
-    # so the robust fallback is to keep top-point series and identify beams in legend.
-    # If your Excel supports it, these labels will appear after opening/editing the file.
-
-ws_top.add_chart(chart, "I2")
+wb.save(EXCEL_FILE)
 
 # =========================
-# SAVE
+# MATPLOTLIB GRAPHICAL OUTPUT
 # =========================
-wb.save(OUT_FILE)
+plt.figure(figsize=(12, 9))
+
+for beam in beam_plot_data:
+    x = beam["X"]
+    y = beam["Y"]
+    top_x = beam["top_x"]
+    top_y = beam["top_y"]
+    beam_id = beam["beam_id"]
+
+    # beam line
+    plt.plot(x, y, linewidth=1.5)
+
+    # top point
+    plt.scatter([top_x], [top_y], s=35)
+
+    # label beside top point
+    plt.annotate(
+        beam_id,
+        (top_x, top_y),
+        xytext=(5, 5),
+        textcoords="offset points",
+        fontsize=9
+    )
+
+plt.xlabel("X")
+plt.ylabel("Y")
+plt.title(f"Embedded beams scheme - top points labeled ({safe_name(phase, 'Last phase')})")
+plt.grid(True)
+plt.axis("equal")
+plt.tight_layout()
+plt.savefig(PLOT_FILE_PNG, dpi=300)
+plt.show()
 
 print("DONE")
-print("File:", OUT_FILE)
-print("Beams exported:", exported)
+print("Excel file:", EXCEL_FILE)
+print("Plot file:", PLOT_FILE_PNG)
+print("Beams exported:", len(top_results))
 print("Phase:", safe_name(phase, "Last"))
