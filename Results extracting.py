@@ -1,3 +1,6 @@
+import sys
+sys.path.append(r"C:\ProgramData\Seequent\PLAXIS Python Distribution V3\python\Lib\site-packages")
+
 from plxscripting.easy import *
 from openpyxl import Workbook
 from openpyxl.chart import ScatterChart, Series, Reference
@@ -6,131 +9,132 @@ from openpyxl.chart import ScatterChart, Series, Reference
 # SETTINGS
 # =========================
 HOST = "localhost"
-PORT = 10000          # Output port
+PORT = 10001   # ✅ OUTPUT PORT (fixed)
 PASSWORD = "12345"
 OUT_FILE = r"embedded_beams_last_phase.xlsx"
 
 # =========================
-# CONNECT TO PLAXIS OUTPUT
+# CONNECT TO OUTPUT
 # =========================
 s_o, g_o = new_server(HOST, PORT, password=PASSWORD)
 
-# Last phase only
-phase = g_o.Phases[-1]
+# =========================
+# GET LAST PHASE (robust)
+# =========================
+def get_last_phase(g_o):
+    # Newer versions (Output)
+    phase_names = [a for a in dir(g_o) if a.startswith("Phase_")]
+    if phase_names:
+        phase_names.sort(key=lambda x: int(x.split("_")[1]))
+        return getattr(g_o, phase_names[-1])
+
+    # Older versions fallback
+    if hasattr(g_o, "Phases"):
+        return g_o.Phases[-1]
+
+    raise Exception("Cannot find phases in Output")
+
+phase = get_last_phase(g_o)
 
 # =========================
 # HELPERS
 # =========================
-def get_embedded_result_family(g_o):
-    if hasattr(g_o.ResultTypes, "EmbeddedBeam"):
-        return g_o.ResultTypes.EmbeddedBeam
-    if hasattr(g_o.ResultTypes, "EmbeddedBeamRow"):
-        return g_o.ResultTypes.EmbeddedBeamRow
-    raise Exception("Could not find EmbeddedBeam / EmbeddedBeamRow in ResultTypes.")
-
 def safe_name(obj, fallback):
     try:
         return obj.Name.value
     except:
         return fallback
 
-def get_all_embedded_beams(g_o):
+def get_embedded_family(g_o):
+    if hasattr(g_o.ResultTypes, "EmbeddedBeam"):
+        return g_o.ResultTypes.EmbeddedBeam
+    if hasattr(g_o.ResultTypes, "EmbeddedBeamRow"):
+        return g_o.ResultTypes.EmbeddedBeamRow
+    raise Exception("Embedded beam result type not found")
+
+def get_beams(g_o):
     if hasattr(g_o, "EmbeddedBeams"):
         return list(g_o.EmbeddedBeams)
     if hasattr(g_o, "EmbeddedBeamRows"):
         return list(g_o.EmbeddedBeamRows)
-    raise Exception("Could not find EmbeddedBeams / EmbeddedBeamRows collection.")
+    raise Exception("No embedded beams found")
 
-def get_result(g_o, obj, phase, result_type, result_location="node"):
+def get_res(obj, phase, rtype):
     try:
-        return g_o.getresults(obj, phase, result_type, result_location)
+        return g_o.getresults(obj, phase, rtype, "node")
     except:
         return []
 
 # =========================
-# READ RESULTS
+# EXTRACTION
 # =========================
-rt = get_embedded_result_family(g_o)
-beams = get_all_embedded_beams(g_o)
+rt = get_embedded_family(g_o)
+beams = get_beams(g_o)
 
 wb = Workbook()
 ws = wb.active
 ws.title = "All_Beams"
 
-headers = [
-    "BeamName",
-    "PointNo",
-    "X",
-    "Y",
-    "Z",
-    "N",
-    "Uz",
-]
-ws.append(headers)
+ws.append(["Beam", "Point", "X", "Y", "Z", "N", "Uz"])
 
-current_row = 2
-exported_beams = 0
+exported = 0
 
 for i, beam in enumerate(beams, start=1):
-    beam_name = safe_name(beam, f"Beam_{i}")
+    name = safe_name(beam, f"Beam_{i}")
 
-    x_vals = get_result(g_o, beam, phase, rt.X, "node")
-    y_vals = get_result(g_o, beam, phase, rt.Y, "node")
-    z_vals = get_result(g_o, beam, phase, rt.Z, "node")
-    n_vals = get_result(g_o, beam, phase, rt.N, "node")
-    uz_vals = get_result(g_o, beam, phase, rt.Uz, "node")
+    X = get_res(beam, phase, rt.X)
+    Y = get_res(beam, phase, rt.Y)
+    Z = get_res(beam, phase, rt.Z)
+    N = get_res(beam, phase, rt.N)
 
-    npts = min(len(x_vals), len(y_vals), len(z_vals), len(n_vals), len(uz_vals))
+    # Uz can vary by version → safe handling
+    Uz = get_res(beam, phase, rt.Uz) if hasattr(rt, "Uz") else []
+
+    npts = min(len(X), len(Y), len(Z), len(N), len(Uz) if Uz else len(X))
     if npts == 0:
         continue
 
-    exported_beams += 1
+    exported += 1
 
     for j in range(npts):
-        ws.append([
-            beam_name,
-            j + 1,
-            x_vals[j],
-            y_vals[j],
-            z_vals[j],
-            n_vals[j],
-            uz_vals[j],
-        ])
-        current_row += 1
+        uz_val = Uz[j] if Uz else None
+        ws.append([name, j+1, X[j], Y[j], Z[j], N[j], uz_val])
 
 # =========================
 # FORMAT
 # =========================
-for col in ["A", "B", "C", "D", "E", "F", "G"]:
-    ws.column_dimensions[col].width = 18
+for col in "ABCDEFG":
+    ws.column_dimensions[col].width = 16
 
 ws.freeze_panes = "A2"
 
 # =========================
-# CREATE XY SCHEME CHART
+# XY SCHEME
 # =========================
 chart = ScatterChart()
-chart.title = f"Embedded beams scheme - {safe_name(phase, 'Last phase')}"
-chart.style = 2
+chart.title = f"Embedded beams (Last phase: {safe_name(phase,'')})"
 chart.x_axis.title = "X"
 chart.y_axis.title = "Y"
+chart.scatterStyle = "lineMarker"
 chart.height = 14
 chart.width = 24
-chart.scatterStyle = "lineMarker"
 
-last_data_row = ws.max_row
+max_row = ws.max_row
 r = 2
-while r <= last_data_row:
+
+while r <= max_row:
     beam_name = ws.cell(r, 1).value
     r_start = r
-    while r <= last_data_row and ws.cell(r, 1).value == beam_name:
+
+    while r <= max_row and ws.cell(r, 1).value == beam_name:
         r += 1
+
     r_end = r - 1
 
-    xvalues = Reference(ws, min_col=3, min_row=r_start, max_row=r_end)  # X
-    yvalues = Reference(ws, min_col=4, min_row=r_start, max_row=r_end)  # Y
-    series = Series(yvalues, xvalues, title=beam_name)
-    chart.series.append(series)
+    x_ref = Reference(ws, min_col=3, min_row=r_start, max_row=r_end)
+    y_ref = Reference(ws, min_col=4, min_row=r_start, max_row=r_end)
+
+    chart.series.append(Series(y_ref, x_ref, title=beam_name))
 
 ws.add_chart(chart, "I2")
 
@@ -139,6 +143,7 @@ ws.add_chart(chart, "I2")
 # =========================
 wb.save(OUT_FILE)
 
-print(f"Done. File saved: {OUT_FILE}")
-print(f"Phase used: {safe_name(phase, 'Last phase')}")
-print(f"Number of embedded beams exported: {exported_beams}")
+print("DONE")
+print("File:", OUT_FILE)
+print("Beams exported:", exported)
+print("Phase:", safe_name(phase, "Last"))
