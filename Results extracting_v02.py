@@ -7,6 +7,7 @@ from plxscripting.easy import *
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from math import ceil
 
 # =========================
@@ -19,9 +20,7 @@ PASSWORD = "12345"
 EXCEL_FILE = r"embedded_beams_top_results.xlsx"
 PLOT_FILE_PNG = r"embedded_beams_scheme.png"
 
-# Intuitive palette:
-# softest -> dark blue
-# stiffest -> red
+# softest -> stiffest
 COLOR_PALETTE = [
     ("1F4E79", "#1F4E79"),  # 1 softest - dark blue
     ("2F75B5", "#2F75B5"),  # 2 blue
@@ -216,6 +215,22 @@ for i, beam in enumerate(beams, start=1):
 # assign classes/colors
 n_classes = assign_kz_classes(beam_plot_data)
 
+# =========================
+# CLASS AVERAGES
+# =========================
+class_kz_values = {i: [] for i in range(1, n_classes + 1)}
+
+for beam in beam_plot_data:
+    if beam["Kz"] is not None and beam["kz_class"] is not None:
+        class_kz_values[beam["kz_class"]].append(beam["Kz"])
+
+class_kz_avg = {}
+for cls, values in class_kz_values.items():
+    if values:
+        class_kz_avg[cls] = sum(values) / len(values)
+    else:
+        class_kz_avg[cls] = None
+
 # sort output rows
 beam_plot_data.sort(key=beam_sort_key)
 
@@ -258,7 +273,6 @@ for col in ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]:
 
 ws1.freeze_panes = "A2"
 
-# same colors for Kz and class
 dark_colors = {"1F4E79", "2F75B5", "C00000"}
 
 for excel_row, beam in enumerate(beam_plot_data, start=2):
@@ -316,31 +330,83 @@ for i in range(n_classes):
 for col in ["A", "B", "C"]:
     ws3.column_dimensions[col].width = 18
 
+ws4 = wb.create_sheet("Class_Averages")
+ws4.append(["Class", "Average Kz (kN/m)", "Number of Beams"])
+
+for cls in range(1, n_classes + 1):
+    avg_kz = class_kz_avg.get(cls)
+    count = len(class_kz_values.get(cls, []))
+
+    ws4.append([f"Class {cls}", avg_kz, count])
+
+    excel_color, _ = COLOR_PALETTE[cls - 1]
+    fill = PatternFill(fill_type="solid", start_color=excel_color, end_color=excel_color)
+
+    row = cls + 1
+    ws4[f"A{row}"].fill = fill
+    ws4[f"B{row}"].fill = fill
+    ws4[f"C{row}"].fill = fill
+
+    if excel_color in dark_colors:
+        ws4[f"A{row}"].font = Font(color="FFFFFF", bold=True)
+        ws4[f"B{row}"].font = Font(color="FFFFFF", bold=True)
+        ws4[f"C{row}"].font = Font(color="FFFFFF", bold=True)
+
+for col in ["A", "B", "C"]:
+    ws4.column_dimensions[col].width = 22
+
 wb.save(EXCEL_FILE)
 
 # =========================
 # MATPLOTLIB GRAPHICAL OUTPUT
 # =========================
-plt.figure(figsize=(13, 10))
+plt.figure(figsize=(14, 10))
 
 for beam in beam_plot_data:
     x = beam["X"]
     y = beam["Y"]
     top_x = beam["top_x"]
     top_y = beam["top_y"]
-    beam_id = beam["beam_id"]
     plot_color = beam["plot_color"]
 
     plt.plot(x, y, linewidth=2.2, color=plot_color)
     plt.scatter([top_x], [top_y], s=55, color=plot_color, edgecolors="black", linewidths=0.7)
 
+    label = f"{beam['beam_id']} (C{beam['kz_class']})" if beam["kz_class"] else beam["beam_id"]
+
     plt.annotate(
-        beam_id,
+        label,
         (top_x, top_y),
-        xytext=(5, 5),
+        xytext=(6, 6),
         textcoords="offset points",
-        fontsize=9
+        fontsize=8.5,
+        bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.7, lw=0)
     )
+
+# custom legend with average Kz
+legend_elements = []
+for cls in range(1, n_classes + 1):
+    _, plot_color = COLOR_PALETTE[cls - 1]
+    avg_kz = class_kz_avg.get(cls)
+    count = len(class_kz_values.get(cls, []))
+
+    if avg_kz is None:
+        legend_label = f"C{cls}: no data"
+    else:
+        legend_label = f"C{cls}: avg Kz = {avg_kz:.2f} kN/m (n={count})"
+
+    legend_elements.append(
+        Line2D([0], [0], color=plot_color, lw=3, label=legend_label)
+    )
+
+plt.legend(
+    handles=legend_elements,
+    title="Stiffness classes",
+    loc="best",
+    fontsize=8,
+    title_fontsize=9,
+    framealpha=0.9
+)
 
 plt.xlabel("X")
 plt.ylabel("Y")
@@ -348,7 +414,7 @@ plt.title(f"Embedded beams stiffness classes - top points labeled ({safe_name(ph
 plt.grid(True, alpha=0.3)
 plt.axis("equal")
 plt.tight_layout()
-plt.savefig(PLOT_FILE_PNG, dpi=300)
+plt.savefig(PLOT_FILE_PNG, dpi=300, bbox_inches="tight")
 plt.show()
 
 print("DONE")
