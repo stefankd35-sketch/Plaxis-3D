@@ -1,4 +1,5 @@
 import re
+import math
 import sys
 sys.path.append(r"C:\ProgramData\Seequent\PLAXIS Python Distribution V3\python\Lib\site-packages")
 
@@ -76,6 +77,15 @@ def top_point_index(z_values):
         return None
     return max(range(len(z_values)), key=lambda i: z_values[i])
 
+def beam_length_3d(x_vals, y_vals, z_vals):
+    total = 0.0
+    for i in range(1, len(x_vals)):
+        dx = x_vals[i] - x_vals[i - 1]
+        dy = y_vals[i] - y_vals[i - 1]
+        dz = z_vals[i] - z_vals[i - 1]
+        total += math.sqrt(dx * dx + dy * dy + dz * dz)
+    return total
+
 # =========================
 # READ DATA
 # =========================
@@ -110,6 +120,7 @@ for i, beam in enumerate(beams, start=1):
 
     n_top = N[idx_top] if idx_top < len(N) else None
     uz_top = Uz[idx_top] if idx_top < len(Uz) else None
+    length_3d = beam_length_3d(X, Y, Z)
 
     beam_plot_data.append({
         "beam_id": beam_id,
@@ -122,6 +133,7 @@ for i, beam in enumerate(beams, start=1):
         "top_z": Z[idx_top],
         "N_top": n_top,
         "Uz_top": uz_top,
+        "Length": length_3d,
     })
 
     top_results.append([
@@ -131,7 +143,8 @@ for i, beam in enumerate(beams, start=1):
         Y[idx_top],
         Z[idx_top],
         n_top,
-        uz_top
+        uz_top,
+        length_3d,
     ])
 
 # =========================
@@ -141,12 +154,12 @@ wb = Workbook()
 
 ws1 = wb.active
 ws1.title = "Top_Results"
-ws1.append(["BeamID", "OriginalName", "Top_X", "Top_Y", "Top_Z", "N_top", "Uz_top"])
+ws1.append(["BeamID", "OriginalName", "Top_X", "Top_Y", "Top_Z", "N_top", "Uz_top", "Length"])
 
 for row in top_results:
     ws1.append(row)
 
-for col in ["A", "B", "C", "D", "E", "F", "G"]:
+for col in ["A", "B", "C", "D", "E", "F", "G", "H"]:
     ws1.column_dimensions[col].width = 18
 
 ws1.freeze_panes = "A2"
@@ -177,13 +190,9 @@ for beam in beam_plot_data:
     top_y = beam["top_y"]
     beam_id = beam["beam_id"]
 
-    # beam line
     plt.plot(x, y, linewidth=1.5)
-
-    # top point
     plt.scatter([top_x], [top_y], s=35)
 
-    # label beside top point
     plt.annotate(
         beam_id,
         (top_x, top_y),
